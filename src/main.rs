@@ -1,22 +1,23 @@
 use futures_util::{stream::SplitStream, SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
+use log::Level;
 
 async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>) {
     while let Some(msg) = ws_read.next().await {
         match msg {
             Ok(msg) => {
                 match msg {
-                    Message::Text(txt) => println!("Received: {}", txt),
+                    Message::Text(txt) => log::info!("Received: {}", txt),
                     Message::Close(_) => {
-                        println!("Connection closed");
+                        log::info!("Connection closed");
                         break;
                     }
                     _ => (),
                 }
             }
             Err(e) => {
-                println!("Error: {}", e);
+                log::info!("Error: {}", e);
                 break;
             }
         }
@@ -25,10 +26,13 @@ async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl 
 
 #[tokio::main]
 async fn main() {
+    simple_logger::init_with_level(Level::Info).expect("Failed to initialize logger");
+
     let url = "wss://ws.poloniex.com/ws/public";
-    println!("Connecting to {}", url);
+    
+    log::info!("Connecting to {}", url);
     let (ws, _) = connect_async(url).await.expect("Failed to connect");
-    println!("Connected");
+    log::info!("Connected");
 
     let (mut ws_write, ws_read) = ws.split();
 
