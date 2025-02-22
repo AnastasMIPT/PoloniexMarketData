@@ -4,24 +4,43 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use log::Level;
 use tokio::time;
 use tokio::sync::mpsc;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct RecentTrade {
+    #[serde(rename = "id")]
+    tid: String,
+    #[serde(rename = "symbol")]
+    pair: String,
+    price: String,
+    amount: String,
+    #[serde(rename = "takerSide")]
+    side: String,
+    #[serde(rename = "createTime")]
+    timestamp: i64,
+}
+
+#[derive(Deserialize, Debug)]
+struct TradeMessage {
+    channel: String,
+    data: Vec<RecentTrade>,
+}
 
 async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>) {
     while let Some(msg) = ws_read.next().await {
         match msg {
-            Ok(msg) => {
-                match msg {
-                    Message::Text(txt) => log::info!("Received: {}", txt),
-                    Message::Close(_) => {
-                        log::info!("Connection closed");
-                        break;
+            Ok(Message::Text(msg)) => {
+                log::info!("Received: {}", msg);
+                if let Ok(trade_message) = serde_json::from_str::<TradeMessage>(&msg) {
+                    for trade in trade_message.data {
+                        log::info!("Parsed trade: {:?}", trade);
                     }
-                    _ => (),
                 }
             }
             Err(e) => {
                 log::info!("Error: {}", e);
-                break;
             }
+        _ => {}
         }
     }
 }
@@ -29,7 +48,7 @@ async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl 
 async fn heartbeat(tx: mpsc::Sender<Message>) {
     loop {
         tx.send(Message::Text("{\"event\": \"ping\"}".into())).await.expect("Failed to send message");
-        time::sleep(time::Duration::from_secs(3)).await;
+        time::sleep(time::Duration::from_secs(29)).await;
     }
 }
 
@@ -47,6 +66,7 @@ async fn send_message(tx: mpsc::Sender<Message>, message: String) {
 async fn main() {
     simple_logger::init_with_level(Level::Info).expect("Failed to initialize logger");
 
+    let _url = "wss://ws.poloniex.com/ws/public";
     let url = "wss://ws.postman-echo.com/raw/";
     
     log::info!("Connecting to {}", url);
@@ -56,17 +76,18 @@ async fn main() {
     let (ws_write, ws_read) = ws.split();
     let (tx, rx) = mpsc::channel(32);
 
-    // Отправка трех сообщений "Hello"
-    for _ in 0..3 {
-        tx.send(Message::Text("Hello".into())).await.expect("Failed to send message");
-    }
-
     let heartbeat_handle = tokio::spawn(heartbeat(tx.clone()));
     let write_handle = tokio::spawn(write_messages(ws_write, rx));
     let read_handle = tokio::spawn(handle_incoming_messages(ws_read));
 
     // Пример отправки произвольного сообщения
-    send_message(tx.clone(), "Custom message".into()).await;
+    send_message(tx.clone(), "{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [\"BTC_USDT\"]}".into()).await;
+
+    let buy_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"1378.48500036\",\"quantity\":\"0.014274\",\"takerSide\":\"buy\",\"createTime\":1740250153282,\"price\":\"96573.14\",\"id\":\"123346679\",\"ts\":1740250153291}]}";
+    let sel_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"354.13425443\",\"quantity\":\"0.003667\",\"takerSide\":\"sell\",\"createTime\":1740250152125,\"price\":\"96573.29\",\"id\":\"123346678\",\"ts\":1740250152142}]}";
+
+    send_message(tx.clone(), buy_message.into()).await;
+    send_message(tx.clone(), sel_message.into()).await;
 
     let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle);
 }
