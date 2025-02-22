@@ -5,6 +5,7 @@ use log::Level;
 use tokio::time;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
+use chrono::{NaiveDate, Utc};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RecentTrade {
@@ -30,11 +31,12 @@ async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl 
     while let Some(msg) = ws_read.next().await {
         match msg {
             Ok(Message::Text(msg)) => {
-                log::info!("Received: {}", msg);
                 if let Ok(trade_message) = serde_json::from_str::<TradeMessage>(&msg) {
                     for trade in trade_message.data {
                         log::info!("Parsed trade: {:?}", trade);
                     }
+                } else {
+                    log::info!("Received: {msg}");
                 }
             }
             Err(e) => {
@@ -88,6 +90,11 @@ async fn main() {
 
     send_message(tx.clone(), buy_message.into()).await;
     send_message(tx.clone(), sel_message.into()).await;
+
+    // Преобразование даты 2024-12-01 в Unix timestamp
+    let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms(0, 0, 0);
+    let timestamp = date.and_utc().timestamp_millis();
+    log::info!("Timestamp for 2024-12-01: {}", timestamp);
 
     let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle);
 }
