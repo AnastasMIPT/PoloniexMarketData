@@ -5,7 +5,7 @@ use log::Level;
 use tokio::time;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RecentTrade {
@@ -25,6 +25,24 @@ struct RecentTrade {
 struct TradeMessage {
     channel: String,
     data: Vec<RecentTrade>,
+}
+
+struct VBS {
+    buy_base: f64,
+    sell_base: f64,
+    buy_quote: f64,
+    sell_quote: f64,
+}
+
+struct Kline {
+    pair: String,
+    time_frame: String,
+    o: f64,
+    h: f64,
+    l: f64,
+    c: f64,
+    utc_begin: i64,
+    volume_bs: VBS,
 }
 
 async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>) {
