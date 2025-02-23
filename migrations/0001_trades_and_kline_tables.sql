@@ -18,5 +18,6 @@ CREATE TABLE klines (
     buy_base DOUBLE PRECISION NOT NULL,
     sell_base DOUBLE PRECISION NOT NULL,
     buy_quote DOUBLE PRECISION NOT NULL,
-    sell_quote DOUBLE PRECISION NOT NULL
+    sell_quote DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (pair, time_frame, utc_begin)
 );
