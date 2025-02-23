@@ -5,8 +5,8 @@ use log::Level;
 use tokio::time;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
-use chrono::{NaiveDate, Utc};
-use sqlx::{postgres::PgPoolOptions, prelude::FromRow, query};
+use chrono::NaiveDate;
+use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -137,13 +137,13 @@ async fn db_insert_kline(kline: &Kline, pool: &sqlx::PgPool) {
     .unwrap();
 }
 
-async fn update_kline(trade: &RecentTrade, pool: &sqlx::PgPool) {
-    let timestamp = trade.timestamp / 60000 * 60000; // округление вниз до ближайшей минуты
+async fn update_kline(trade: &RecentTrade, time_frame: &str, interval: i64, pool: &sqlx::PgPool) {
+    let timestamp = (trade.timestamp / interval) * interval; // округление вниз до ближайшего интервала
     let price: f64 = trade.price.parse().unwrap();
     let amount: f64 = trade.amount.parse().unwrap();
     let side = &trade.side;
 
-    let kline = db_get_kline(&trade.pair, "1m", timestamp, pool).await;
+    let kline = db_get_kline(&trade.pair, time_frame, timestamp, pool).await;
 
     if let Some(mut kline) = kline {
         kline.c = price;
@@ -175,7 +175,7 @@ async fn update_kline(trade: &RecentTrade, pool: &sqlx::PgPool) {
         };
         let new_kline = Kline {
             pair: trade.pair.clone(),
-            time_frame: "1m".to_string(),
+            time_frame: time_frame.to_string(),
             o: price,
             h: price,
             l: price,
@@ -195,7 +195,10 @@ async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl 
                     for trade in trade_message.data {
                         log::info!("Parsed trade: {:?}", trade);
                         db_insert_trade(&trade, &pool).await;
-                        update_kline(&trade, &pool).await;
+                        update_kline(&trade, "1m", 60000, &pool).await;
+                        update_kline(&trade, "15m", 900000, &pool).await;
+                        update_kline(&trade, "1h", 3600000, &pool).await;
+                        update_kline(&trade, "1d", 86400000, &pool).await;
                     }
                 } else {
                     log::info!("Received: {msg}");
@@ -256,13 +259,13 @@ async fn main() {
     let read_handle = tokio::spawn(handle_incoming_messages(ws_read, pool.clone()));
 
     // Пример отправки произвольного сообщения
-    send_message(tx.clone(), "{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [\"BTC_USDT\"]}".into()).await;
+    send_message(tx.clone(), "{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [\"BTC_USDT\", \"ETH_USDT\"]}".into()).await;
 
     let buy_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"1378.48500036\",\"quantity\":\"0.014274\",\"takerSide\":\"buy\",\"createTime\":1740250153282,\"price\":\"96573.14\",\"id\":\"123346679\",\"ts\":1740250153291}]}";
-    let sel_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"354.13425443\",\"quantity\":\"0.003667\",\"takerSide\":\"sell\",\"createTime\":1740250152125,\"price\":\"96573.29\",\"id\":\"123346678\",\"ts\":1740250152142}]}";
+    let sell_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"354.13425443\",\"quantity\":\"0.003667\",\"takerSide\":\"sell\",\"createTime\":1740250152125,\"price\":\"96573.29\",\"id\":\"123346678\",\"ts\":1740250152142}]}";
 
     send_message(tx.clone(), buy_message.into()).await;
-    send_message(tx.clone(), sel_message.into()).await;
+    send_message(tx.clone(), sell_message.into()).await;
 
     // Преобразование даты 2024-12-01 в Unix timestamp
     let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms(0, 0, 0);
