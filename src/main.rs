@@ -5,7 +5,8 @@ use log::Level;
 use tokio::time;
 use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
+use sqlx::{postgres::PgPoolOptions, query};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RecentTrade {
@@ -45,13 +46,28 @@ struct Kline {
     volume_bs: VBS,
 }
 
-async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>) {
+async fn insert_trade_to_db(trade: &RecentTrade, pool: &sqlx::PgPool) {
+    let query = "INSERT INTO recent_trades (tid, pair, price, amount, side, timestamp) VALUES ($1, $2, $3, $4, $5, $6)";
+    sqlx::query(query)
+        .bind(&trade.tid)
+        .bind(&trade.pair)
+        .bind(&trade.price)
+        .bind(&trade.amount)
+        .bind(&trade.side)
+        .bind(&trade.timestamp)
+        .execute(pool)
+        .await
+        .expect("Failed to execute query");
+}
+
+async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>, pool: sqlx::PgPool) {
     while let Some(msg) = ws_read.next().await {
         match msg {
             Ok(Message::Text(msg)) => {
                 if let Ok(trade_message) = serde_json::from_str::<TradeMessage>(&msg) {
                     for trade in trade_message.data {
                         log::info!("Parsed trade: {:?}", trade);
+                        insert_trade_to_db(&trade, &pool).await;
                     }
                 } else {
                     log::info!("Received: {msg}");
@@ -86,6 +102,17 @@ async fn send_message(tx: mpsc::Sender<Message>, message: String) {
 async fn main() {
     simple_logger::init_with_level(Level::Info).expect("Failed to initialize logger");
 
+    let database_url = "postgres://postgres:1234@localhost:5432/poloniex";
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(database_url)
+        .await
+        .expect("Failed to create pool");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
     let _url = "wss://ws.poloniex.com/ws/public";
     let url = "wss://ws.postman-echo.com/raw/";
     
@@ -98,7 +125,7 @@ async fn main() {
 
     let heartbeat_handle = tokio::spawn(heartbeat(tx.clone()));
     let write_handle = tokio::spawn(write_messages(ws_write, rx));
-    let read_handle = tokio::spawn(handle_incoming_messages(ws_read));
+    let read_handle = tokio::spawn(handle_incoming_messages(ws_read, pool.clone()));
 
     // Пример отправки произвольного сообщения
     send_message(tx.clone(), "{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [\"BTC_USDT\"]}".into()).await;

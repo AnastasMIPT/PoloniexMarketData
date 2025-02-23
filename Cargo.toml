@@ -10,5 +10,6 @@ log = "0.4.26"
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
 simple_logger = "5.0.0"
+sqlx = { version = "0.8.3", features = ["runtime-tokio-rustls", "postgres", "macros"] }
 tokio = { version = "1.43.0", features = ["full"] }
 tokio-tungstenite = { version = "0.26.2", features = ["native-tls"] }
