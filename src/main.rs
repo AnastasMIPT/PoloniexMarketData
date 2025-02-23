@@ -4,10 +4,12 @@ use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use log::Level;
 use tokio::time;
 use tokio::sync::mpsc;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Deserializer};
+use serde::de::Error as DeError;
 use chrono::NaiveDate;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
+use reqwest::Client;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RecentTrade {
@@ -29,6 +31,7 @@ struct TradeMessage {
     data: Vec<RecentTrade>,
 }
 
+#[derive(Debug)]
 struct VBS {
     buy_base: f64,
     sell_base: f64,
@@ -36,6 +39,7 @@ struct VBS {
     sell_quote: f64,
 }
 
+#[derive(Debug)]
 struct Kline {
     pair: String,
     time_frame: String,
@@ -45,6 +49,67 @@ struct Kline {
     c: f64,
     utc_begin: i64,
     volume_bs: VBS,
+}
+
+fn parse_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    s.parse::<f64>().map_err(DeError::custom)
+}
+
+#[derive(Deserialize, Debug)]
+struct ApiKline {
+    #[serde(rename = "open", deserialize_with = "parse_f64")]
+    o: f64,
+    #[serde(rename = "high", deserialize_with = "parse_f64")]
+    h: f64,
+    #[serde(rename = "low", deserialize_with = "parse_f64")]
+    l: f64,
+    #[serde(rename = "close", deserialize_with = "parse_f64")]
+    c: f64,
+    #[serde(deserialize_with = "parse_f64")]
+    amount: f64,
+    #[serde(deserialize_with = "parse_f64")]
+    quantity: f64,
+    #[serde(rename = "buyTakerAmount", deserialize_with = "parse_f64")]
+    buy_taker_amount: f64,
+    #[serde(rename = "buyTakerQuantity", deserialize_with = "parse_f64")]
+    buy_taker_quantity: f64,
+    tradeCount: u64,
+    ts: i64,
+    #[serde(deserialize_with = "parse_f64")]
+    weightedAverage: f64,
+    interval: String,
+    #[serde(rename = "startTime")]
+    utc_begin: i64,
+    closeTime: i64,
+}
+
+async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec<Kline>, reqwest::Error> {
+    let url = format!("https://api.poloniex.com/markets/{}/candles?interval={}&startTime={}", pair, interval, start_time);
+    let client = Client::new();
+    let response = client.get(&url).send().await?;
+    let api_klines: Vec<ApiKline> = response.json().await?;
+    let klines: Vec<Kline> = api_klines.into_iter().map(|api_kline| {
+        Kline {
+            pair: pair.to_string(),
+            time_frame: interval.to_string(),
+            o: api_kline.o,
+            h: api_kline.h,
+            l: api_kline.l,
+            c: api_kline.c,
+            utc_begin: api_kline.utc_begin,
+            volume_bs: VBS {
+                buy_base: api_kline.buy_taker_quantity,
+                sell_base: api_kline.quantity - api_kline.buy_taker_quantity,
+                buy_quote: api_kline.buy_taker_amount,
+                sell_quote: api_kline.amount - api_kline.buy_taker_amount,
+            },
+        }
+    }).collect();
+    Ok(klines)
 }
 
 async fn db_insert_trade(trade: &RecentTrade, pool: &sqlx::PgPool) {
@@ -262,15 +327,20 @@ async fn main() {
     send_message(tx.clone(), "{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [\"BTC_USDT\", \"ETH_USDT\"]}".into()).await;
 
     let buy_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"1378.48500036\",\"quantity\":\"0.014274\",\"takerSide\":\"buy\",\"createTime\":1740250153282,\"price\":\"96573.14\",\"id\":\"123346679\",\"ts\":1740250153291}]}";
-    let sell_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"354.13425443\",\"quantity\":\"0.003667\",\"takerSide\":\"sell\",\"createTime\":1740250152125,\"price\":\"96573.29\",\"id\":\"123346678\",\"ts\":1740250152142}]}";
-
     send_message(tx.clone(), buy_message.into()).await;
-    send_message(tx.clone(), sell_message.into()).await;
 
-    // Преобразование даты 2024-12-01 в Unix timestamp
-    let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms(0, 0, 0);
-    let timestamp = date.and_utc().timestamp_millis();
-    log::info!("Timestamp for 2024-12-01: {}", timestamp);
+    let fetch_klines_handle = tokio::spawn(async move {
+        // Преобразование даты 2024-12-01 в Unix timestamp
+        let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms(0, 0, 0);
+        let timestamp = date.and_utc().timestamp_millis();
+        
+        // Пример получения данных свечек
+        let klines = fetch_klines("ETH_USDT", "DAY_1", timestamp).await.expect("Failed to fetch klines");
+        for kline in klines {
+            db_insert_kline(&kline, &pool).await;
+            log::info!("Inserted kline: {:?}", kline);
+        }
+    });
 
-    let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle);
+    let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle, fetch_klines_handle);
 }
