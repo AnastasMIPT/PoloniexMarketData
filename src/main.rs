@@ -48,7 +48,7 @@ struct Kline {
 
 async fn insert_trade_to_db(trade: &RecentTrade, pool: &sqlx::PgPool) {
     let query = "INSERT INTO recent_trades (tid, pair, price, amount, side, timestamp) VALUES ($1, $2, $3, $4, $5, $6)";
-    sqlx::query(query)
+    match sqlx::query(query)
         .bind(&trade.tid)
         .bind(&trade.pair)
         .bind(&trade.price)
@@ -56,8 +56,10 @@ async fn insert_trade_to_db(trade: &RecentTrade, pool: &sqlx::PgPool) {
         .bind(&trade.side)
         .bind(&trade.timestamp)
         .execute(pool)
-        .await
-        .expect("Failed to execute query");
+        .await {
+            Ok(_) => {},
+            Err(e) => log::error!("Failed to insert trade with tid = {}: {}", &trade.tid, e),
+        }
 }
 
 async fn handle_incoming_messages(mut ws_read: SplitStream<WebSocketStream<impl AsyncRead + AsyncWrite + Unpin>>, pool: sqlx::PgPool) {
