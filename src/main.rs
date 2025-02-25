@@ -103,7 +103,7 @@ async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start
     Ok(api_klines)
 }
 
-async fn fetch_klines_to_db(pair: &str, interval: &str, start_time: i64, pool: &sqlx::PgPool) -> Result<(), Box<dyn Error>> {
+async fn fetch_klines_to_db(pair: &str, interval: &str, start_time: i64, limit: usize, pool: &sqlx::PgPool) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
     let mut current_start_time = start_time;
     let (interval_str, interval_ms) = match interval {
@@ -115,7 +115,7 @@ async fn fetch_klines_to_db(pair: &str, interval: &str, start_time: i64, pool: &
     };
 
     loop {
-        let api_klines = fetch_klines_request(&client, pair, interval_str, current_start_time, 100).await?;
+        let api_klines = fetch_klines_request(&client, pair, interval_str, current_start_time, limit).await?;
         if api_klines.is_empty() {
             break;
         }
@@ -139,7 +139,7 @@ async fn fetch_klines_to_db(pair: &str, interval: &str, start_time: i64, pool: &
             db_insert_kline(&kline, pool).await;
         }
 
-        if api_klines.len() < 100 {
+        if api_klines.len() < limit {
             break;
         }
         current_start_time += interval_ms;
@@ -239,7 +239,7 @@ async fn db_insert_kline(kline: &Kline, pool: &sqlx::PgPool) {
     .execute(pool)
     .await {
         Ok(_) => {},
-        Err(e) => log::error!("Failed to insert kline with pair{} time_frame {}, utc_begin {}: {}",
+        Err(e) => log::error!("Failed to insert kline with pair {} time_frame {}, utc_begin {}: {}",
                                     &kline.pair, &kline.time_frame, kline.utc_begin, e),
     }
 }
@@ -378,7 +378,7 @@ async fn main() {
         let timestamp = date.and_utc().timestamp_millis();
         
         // Пример получения данных свечек и добавления их в базу данных
-        fetch_klines_to_db("ETH_USDT", "1m", timestamp, &pool).await.expect("Failed to fetch klines");
+        fetch_klines_to_db("BTC_USDT", "1m", timestamp, 300, &pool).await.expect("Failed to fetch klines");
     });
 
     let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle, fetch_klines_handle);
