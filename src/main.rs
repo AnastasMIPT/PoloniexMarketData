@@ -91,13 +91,14 @@ struct ApiKline {
     close_time: i64,
 }
 
-async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start_time: i64, limit: usize) -> Result<Vec<ApiKline>, Box<dyn Error>> {
+async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start_time: i64, end_time: i64, limit: usize) -> Result<Vec<ApiKline>, Box<dyn Error>> {
     let url = format!(
-        "https://api.poloniex.com/markets/{}/candles?interval={}&startTime={}&limit={}",
-        pair, interval, start_time, limit
+        "https://api.poloniex.com/markets/{}/candles?interval={}&startTime={}&endTime={}&limit={}",
+        pair, interval, start_time, end_time, limit
     );
     log::info!("Fetching klines from {}", url);
     let response = client.get(&url).send().await?;
+    log::info!("Response status: {}", response.status());
     let api_klines: Vec<ApiKline> = response.json().await?;
     log::info!("Fetched {} klines", api_klines.len());
     Ok(api_klines)
@@ -113,9 +114,10 @@ async fn fetch_klines_to_db(pair: &str, interval: &str, start_time: i64, limit: 
         "1d" => ("DAY_1", 86_400_000),
         _ => return Err("Invalid interval".into()),
     };
+    let mut current_end_time = current_start_time + (interval_ms as i64) * limit as i64;
 
     loop {
-        let api_klines = fetch_klines_request(&client, pair, interval_str, current_start_time, limit).await?;
+        let api_klines = fetch_klines_request(&client, pair, interval_str, current_start_time, current_end_time, limit).await?;
         if api_klines.is_empty() {
             break;
         }
@@ -142,7 +144,9 @@ async fn fetch_klines_to_db(pair: &str, interval: &str, start_time: i64, limit: 
         if api_klines.len() < limit {
             break;
         }
-        current_start_time += interval_ms;
+
+        current_start_time = current_end_time;
+        current_end_time = current_end_time + (interval_ms as i64) * limit as i64;
     }
 
     Ok(())
@@ -374,11 +378,11 @@ async fn main() {
 
     let fetch_klines_handle = tokio::spawn(async move {
         // Преобразование даты 2024-12-01 в Unix timestamp
-        let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms(0, 0, 0);
+        let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms_opt(0, 0, 0).expect("Invalid time");
         let timestamp = date.and_utc().timestamp_millis();
         
         // Пример получения данных свечек и добавления их в базу данных
-        fetch_klines_to_db("BTC_USDT", "1m", timestamp, 300, &pool).await.expect("Failed to fetch klines");
+        fetch_klines_to_db("ETH_USDT", "1m", timestamp, 500, &pool).await.expect("Failed to fetch klines");
     });
 
     let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle, fetch_klines_handle);
