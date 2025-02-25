@@ -103,9 +103,8 @@ async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start
     Ok(api_klines)
 }
 
-async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec<Kline>, Box<dyn Error>> {
+async fn fetch_klines_to_db(pair: &str, interval: &str, start_time: i64, pool: &sqlx::PgPool) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
-    let mut klines = Vec::new();
     let mut current_start_time = start_time;
     let (interval_str, interval_ms) = match interval {
         "1m" => ("MINUTE_1", 60_000),
@@ -121,8 +120,8 @@ async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec
             break;
         }
 
-        klines.extend(api_klines.iter().map(|api_kline| {
-            Kline {
+        for api_kline in api_klines.iter() {
+            let kline = Kline {
                 pair: pair.to_string(),
                 time_frame: interval.to_string(),
                 o: api_kline.o,
@@ -136,8 +135,9 @@ async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec
                     buy_quote: api_kline.buy_taker_amount,
                     sell_quote: api_kline.amount - api_kline.buy_taker_amount,
                 },
-            }
-        }));
+            };
+            db_insert_kline(&kline, pool).await;
+        }
 
         if api_klines.len() < 100 {
             break;
@@ -145,7 +145,7 @@ async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec
         current_start_time += interval_ms;
     }
 
-    Ok(klines)
+    Ok(())
 }
 
 async fn db_insert_trade(trade: &RecentTrade, pool: &sqlx::PgPool) {
@@ -377,12 +377,8 @@ async fn main() {
         let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms(0, 0, 0);
         let timestamp = date.and_utc().timestamp_millis();
         
-        // Пример получения данных свечек
-        let klines = fetch_klines("ETH_USDT", "1m", timestamp).await.expect("Failed to fetch klines");
-        for kline in klines {
-            db_insert_kline(&kline, &pool).await;
-            log::info!("Inserted kline: {:?}", kline);
-        }
+        // Пример получения данных свечек и добавления их в базу данных
+        fetch_klines_to_db("ETH_USDT", "1m", timestamp, &pool).await.expect("Failed to fetch klines");
     });
 
     let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle, fetch_klines_handle);
