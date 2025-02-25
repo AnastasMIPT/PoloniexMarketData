@@ -62,12 +62,12 @@ where
 
 #[derive(Deserialize, Debug)]
 struct ApiKline {
-    #[serde(rename = "open", deserialize_with = "parse_f64")]
-    o: f64,
-    #[serde(rename = "high", deserialize_with = "parse_f64")]
-    h: f64,
     #[serde(rename = "low", deserialize_with = "parse_f64")]
     l: f64,
+    #[serde(rename = "high", deserialize_with = "parse_f64")]
+    h: f64,
+    #[serde(rename = "open", deserialize_with = "parse_f64")]
+    o: f64,
     #[serde(rename = "close", deserialize_with = "parse_f64")]
     c: f64,
     #[serde(deserialize_with = "parse_f64")]
@@ -78,14 +78,17 @@ struct ApiKline {
     buy_taker_amount: f64,
     #[serde(rename = "buyTakerQuantity", deserialize_with = "parse_f64")]
     buy_taker_quantity: f64,
-    tradeCount: u64,
+    #[serde(rename = "tradeCount")]
+    trade_count: u64,
     ts: i64,
     #[serde(deserialize_with = "parse_f64")]
-    weightedAverage: f64,
+    #[serde(rename = "weightedAverage")]
+    weighted_average: f64,
     interval: String,
     #[serde(rename = "startTime")]
     utc_begin: i64,
-    closeTime: i64,
+    #[serde(rename = "closeTime")]
+    close_time: i64,
 }
 
 async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start_time: i64, limit: usize) -> Result<Vec<ApiKline>, Box<dyn Error>> {
@@ -93,8 +96,10 @@ async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start
         "https://api.poloniex.com/markets/{}/candles?interval={}&startTime={}&limit={}",
         pair, interval, start_time, limit
     );
+    log::info!("Fetching klines from {}", url);
     let response = client.get(&url).send().await?;
     let api_klines: Vec<ApiKline> = response.json().await?;
+    log::info!("Fetched {} klines", api_klines.len());
     Ok(api_klines)
 }
 
@@ -137,8 +142,7 @@ async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec
         if api_klines.len() < 100 {
             break;
         }
-
-        current_start_time = api_klines.last().unwrap().utc_begin + interval_ms;
+        current_start_time += interval_ms;
     }
 
     Ok(klines)
@@ -195,7 +199,7 @@ async fn db_get_kline(pair: &str, time_frame: &str, timestamp: i64, pool: &sqlx:
 }
 
 async fn db_update_kline(kline: &Kline, pool: &sqlx::PgPool) {
-    sqlx::query(
+    match sqlx::query(
         "UPDATE klines SET o = $1, h = $2, l = $3, c = $4, buy_base = $5, sell_base = $6, buy_quote = $7, sell_quote = $8 WHERE pair = $9 AND time_frame = $10 AND utc_begin = $11"
     )
     .bind(kline.o)
@@ -210,12 +214,15 @@ async fn db_update_kline(kline: &Kline, pool: &sqlx::PgPool) {
     .bind(&kline.time_frame)
     .bind(kline.utc_begin)
     .execute(pool)
-    .await
-    .unwrap();
+    .await {
+        Ok(_) => {},
+        Err(e) => log::error!("Failed to update kline with pair{} time_frame {}, utc_begin {}: {}",
+                                    &kline.pair, &kline.time_frame, kline.utc_begin, e),
+    }
 }
 
 async fn db_insert_kline(kline: &Kline, pool: &sqlx::PgPool) {
-    sqlx::query(
+    match sqlx::query(
         "INSERT INTO klines (pair, time_frame, o, h, l, c, utc_begin, buy_base, sell_base, buy_quote, sell_quote) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
     )
     .bind(&kline.pair)
@@ -230,8 +237,11 @@ async fn db_insert_kline(kline: &Kline, pool: &sqlx::PgPool) {
     .bind(kline.volume_bs.buy_quote)
     .bind(kline.volume_bs.sell_quote)
     .execute(pool)
-    .await
-    .unwrap();
+    .await {
+        Ok(_) => {},
+        Err(e) => log::error!("Failed to insert kline with pair{} time_frame {}, utc_begin {}: {}",
+                                    &kline.pair, &kline.time_frame, kline.utc_begin, e),
+    }
 }
 
 async fn update_kline(trade: &RecentTrade, time_frame: &str, interval: i64, pool: &sqlx::PgPool) {
@@ -368,7 +378,7 @@ async fn main() {
         let timestamp = date.and_utc().timestamp_millis();
         
         // Пример получения данных свечек
-        let klines = fetch_klines("ETH_USDT", "1d", timestamp).await.expect("Failed to fetch klines");
+        let klines = fetch_klines("ETH_USDT", "1m", timestamp).await.expect("Failed to fetch klines");
         for kline in klines {
             db_insert_kline(&kline, &pool).await;
             log::info!("Inserted kline: {:?}", kline);
