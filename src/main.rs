@@ -10,6 +10,7 @@ use chrono::NaiveDate;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::Row;
 use reqwest::Client;
+use std::error::Error;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct RecentTrade {
@@ -87,28 +88,59 @@ struct ApiKline {
     closeTime: i64,
 }
 
-async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec<Kline>, reqwest::Error> {
-    let url = format!("https://api.poloniex.com/markets/{}/candles?interval={}&startTime={}", pair, interval, start_time);
-    let client = Client::new();
+async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start_time: i64, limit: usize) -> Result<Vec<ApiKline>, Box<dyn Error>> {
+    let url = format!(
+        "https://api.poloniex.com/markets/{}/candles?interval={}&startTime={}&limit={}",
+        pair, interval, start_time, limit
+    );
     let response = client.get(&url).send().await?;
     let api_klines: Vec<ApiKline> = response.json().await?;
-    let klines: Vec<Kline> = api_klines.into_iter().map(|api_kline| {
-        Kline {
-            pair: pair.to_string(),
-            time_frame: interval.to_string(),
-            o: api_kline.o,
-            h: api_kline.h,
-            l: api_kline.l,
-            c: api_kline.c,
-            utc_begin: api_kline.utc_begin,
-            volume_bs: VBS {
-                buy_base: api_kline.buy_taker_quantity,
-                sell_base: api_kline.quantity - api_kline.buy_taker_quantity,
-                buy_quote: api_kline.buy_taker_amount,
-                sell_quote: api_kline.amount - api_kline.buy_taker_amount,
-            },
+    Ok(api_klines)
+}
+
+async fn fetch_klines(pair: &str, interval: &str, start_time: i64) -> Result<Vec<Kline>, Box<dyn Error>> {
+    let client = Client::new();
+    let mut klines = Vec::new();
+    let mut current_start_time = start_time;
+    let (interval_str, interval_ms) = match interval {
+        "1m" => ("MINUTE_1", 60_000),
+        "15m" => ("MINUTE_15", 900_000),
+        "1h" => ("HOUR_1", 3_600_000),
+        "1d" => ("DAY_1", 86_400_000),
+        _ => return Err("Invalid interval".into()),
+    };
+
+    loop {
+        let api_klines = fetch_klines_request(&client, pair, interval_str, current_start_time, 100).await?;
+        if api_klines.is_empty() {
+            break;
         }
-    }).collect();
+
+        klines.extend(api_klines.iter().map(|api_kline| {
+            Kline {
+                pair: pair.to_string(),
+                time_frame: interval.to_string(),
+                o: api_kline.o,
+                h: api_kline.h,
+                l: api_kline.l,
+                c: api_kline.c,
+                utc_begin: api_kline.utc_begin,
+                volume_bs: VBS {
+                    buy_base: api_kline.buy_taker_quantity,
+                    sell_base: api_kline.quantity - api_kline.buy_taker_quantity,
+                    buy_quote: api_kline.buy_taker_amount,
+                    sell_quote: api_kline.amount - api_kline.buy_taker_amount,
+                },
+            }
+        }));
+
+        if api_klines.len() < 100 {
+            break;
+        }
+
+        current_start_time = api_klines.last().unwrap().utc_begin + interval_ms;
+    }
+
     Ok(klines)
 }
 
@@ -327,6 +359,7 @@ async fn main() {
     send_message(tx.clone(), "{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [\"BTC_USDT\", \"ETH_USDT\"]}".into()).await;
 
     let buy_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"1378.48500036\",\"quantity\":\"0.014274\",\"takerSide\":\"buy\",\"createTime\":1740250153282,\"price\":\"96573.14\",\"id\":\"123346679\",\"ts\":1740250153291}]}";
+
     send_message(tx.clone(), buy_message.into()).await;
 
     let fetch_klines_handle = tokio::spawn(async move {
@@ -335,7 +368,7 @@ async fn main() {
         let timestamp = date.and_utc().timestamp_millis();
         
         // Пример получения данных свечек
-        let klines = fetch_klines("ETH_USDT", "DAY_1", timestamp).await.expect("Failed to fetch klines");
+        let klines = fetch_klines("ETH_USDT", "1d", timestamp).await.expect("Failed to fetch klines");
         for kline in klines {
             db_insert_kline(&kline, &pool).await;
             log::info!("Inserted kline: {:?}", kline);
