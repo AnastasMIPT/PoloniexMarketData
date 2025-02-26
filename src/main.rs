@@ -349,7 +349,8 @@ async fn main() {
     let url = "wss://ws.poloniex.com/ws/public";
     let pairs = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
     let intervals = ["1d", "1h", "15m", "1m"];
-    // Преобразование даты 2024-12-01 в Unix timestamp
+    // Преобразование даты 2024-12-01 в Unix timestamp, чтобы  в дальнейшем
+    // получить историю котировок с этой даты
     let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms_opt(0, 0, 0).expect("Invalid time");
     let timestamp = date.and_utc().timestamp_millis();
 
@@ -372,17 +373,21 @@ async fn main() {
     let (ws_write, ws_read) = ws.split();
     let (tx, rx) = mpsc::channel(32);
 
+    // Отправляем запросы ping, чтобы нас не отключили
     let heartbeat_handle = tokio::spawn(heartbeat(tx.clone()));
+    // Отправляем все сообщения через одну задачу, агрегирующую все сообщения из канала
     let write_handle = tokio::spawn(write_messages(ws_write, rx));
+    // Обрабатываем входящие сообщения
     let read_handle = tokio::spawn(handle_incoming_messages(ws_read, pool.clone()));
 
+    // Подписка на получение данных о последних сделках
     let subscribe_message = format!(
         "{{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [{}]}}",
         pairs.iter().map(|&s| format!("\"{}\"", s)).collect::<Vec<String>>().join(", ")
     );
     send_message(tx.clone(), subscribe_message).await;
 
-
+    // Собираем по REST API историю котировок для нужных пар и таймфреймов
     let mut handles = vec![];
 
     for &interval in &intervals {
