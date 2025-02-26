@@ -356,8 +356,8 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
-    let _url = "wss://ws.poloniex.com/ws/public";
-    let url = "wss://ws.postman-echo.com/raw/";
+    let url = "wss://ws.poloniex.com/ws/public";
+    let _url = "wss://ws.postman-echo.com/raw/";
     
     log::info!("Connecting to {}", url);
     let (ws, _) = connect_async(url).await.expect("Failed to connect");
@@ -371,17 +371,17 @@ async fn main() {
     let read_handle = tokio::spawn(handle_incoming_messages(ws_read, pool.clone()));
 
     // Пример отправки произвольного сообщения
-    send_message(tx.clone(), "{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [\"BTC_USDT\", \"ETH_USDT\"]}".into()).await;
-
-    let buy_message = "{\"channel\":\"trades\",\"data\":[{\"symbol\":\"BTC_USDT\",\"amount\":\"1378.48500036\",\"quantity\":\"0.014274\",\"takerSide\":\"buy\",\"createTime\":1740250153282,\"price\":\"96573.14\",\"id\":\"123346679\",\"ts\":1740250153291}]}";
-
-    send_message(tx.clone(), buy_message.into()).await;
+    let pairs = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
+    let subscribe_message = format!(
+        "{{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [{}]}}",
+        pairs.iter().map(|&s| format!("\"{}\"", s)).collect::<Vec<String>>().join(", ")
+    );
+    send_message(tx.clone(), subscribe_message).await;
 
     // Преобразование даты 2024-12-01 в Unix timestamp
     let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms_opt(0, 0, 0).expect("Invalid time");
     let timestamp = date.and_utc().timestamp_millis();
 
-    let pairs = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
     let intervals = ["1d", "1h", "15m", "1m"];
 
     let mut handles = vec![];
