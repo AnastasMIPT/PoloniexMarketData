@@ -346,6 +346,14 @@ async fn main() {
     simple_logger::init_with_level(Level::Info).expect("Failed to initialize logger");
 
     let database_url = "postgres://postgres:1234@localhost:5432/poloniex";
+    let url = "wss://ws.poloniex.com/ws/public";
+    let pairs = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
+    let intervals = ["1d", "1h", "15m", "1m"];
+    // Преобразование даты 2024-12-01 в Unix timestamp
+    let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms_opt(0, 0, 0).expect("Invalid time");
+    let timestamp = date.and_utc().timestamp_millis();
+
+ 
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(database_url)
@@ -356,8 +364,6 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
-    let url = "wss://ws.poloniex.com/ws/public";
-    let _url = "wss://ws.postman-echo.com/raw/";
     
     log::info!("Connecting to {}", url);
     let (ws, _) = connect_async(url).await.expect("Failed to connect");
@@ -370,19 +376,12 @@ async fn main() {
     let write_handle = tokio::spawn(write_messages(ws_write, rx));
     let read_handle = tokio::spawn(handle_incoming_messages(ws_read, pool.clone()));
 
-    // Пример отправки произвольного сообщения
-    let pairs = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
     let subscribe_message = format!(
         "{{\"event\": \"subscribe\", \"channel\": [\"trades\"], \"symbols\": [{}]}}",
         pairs.iter().map(|&s| format!("\"{}\"", s)).collect::<Vec<String>>().join(", ")
     );
     send_message(tx.clone(), subscribe_message).await;
 
-    // Преобразование даты 2024-12-01 в Unix timestamp
-    let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms_opt(0, 0, 0).expect("Invalid time");
-    let timestamp = date.and_utc().timestamp_millis();
-
-    let intervals = ["1d", "1h", "15m", "1m"];
 
     let mut handles = vec![];
 
