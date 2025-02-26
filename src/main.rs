@@ -1,4 +1,5 @@
 use futures_util::{stream::{SplitSink, SplitStream}, SinkExt, StreamExt};
+use futures::future;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use log::Level;
@@ -100,7 +101,7 @@ async fn fetch_klines_request(client: &Client, pair: &str, interval: &str, start
     let response = client.get(&url).send().await?;
     log::info!("Response status: {}", response.status());
     let api_klines: Vec<ApiKline> = response.json().await?;
-    log::info!("Fetched {} klines", api_klines.len());
+    log::info!("Fetched {} klines for {pair}", api_klines.len());
     Ok(api_klines)
 }
 
@@ -376,14 +377,24 @@ async fn main() {
 
     send_message(tx.clone(), buy_message.into()).await;
 
-    let fetch_klines_handle = tokio::spawn(async move {
-        // Преобразование даты 2024-12-01 в Unix timestamp
-        let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms_opt(0, 0, 0).expect("Invalid time");
-        let timestamp = date.and_utc().timestamp_millis();
-        
-        // Пример получения данных свечек и добавления их в базу данных
-        fetch_klines_to_db("ETH_USDT", "1m", timestamp, 500, &pool).await.expect("Failed to fetch klines");
-    });
+    // Преобразование даты 2024-12-01 в Unix timestamp
+    let date = NaiveDate::from_ymd_opt(2024, 12, 1).expect("Invalid date").and_hms_opt(0, 0, 0).expect("Invalid time");
+    let timestamp = date.and_utc().timestamp_millis();
 
-    let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle, fetch_klines_handle);
+    let pairs = ["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDT", "BCH_USDT"];
+    let intervals = ["1d", "1h", "15m", "1m"];
+
+    let mut handles = vec![];
+
+    for &interval in &intervals {
+        for &pair in &pairs {
+            let pool = pool.clone();
+            let handle = tokio::spawn(async move {
+                fetch_klines_to_db(pair, interval, timestamp, 500, &pool).await.expect("Failed to fetch klines");
+            });
+            handles.push(handle);
+        }
+    }
+
+    let _ = tokio::try_join!(read_handle, write_handle, heartbeat_handle, futures::future::try_join_all(handles));
 }
